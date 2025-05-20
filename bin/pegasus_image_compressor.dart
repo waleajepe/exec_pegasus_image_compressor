@@ -12,10 +12,10 @@ Internal Program developed in PremiumTrust Bank by Olawale Ajepe
 Role: Software Developer
 
 💡 Usage:
-  image_compressor <source_folder> <output_folder>
+  pegasus_image_compressor <source_folder> <output_folder>
 
 Example:
-  image_compressor ~/Pictures ~/CompressedImages
+  pegasus_image_compressor ~/Pictures ~/CompressedImages
 
 Options:
   -h, --help        Show this help message
@@ -24,7 +24,7 @@ Options:
 📝 Note:
 - Only .jpg, .jpeg, and .png files are processed.
 - Files larger than 1MB will be resized.
-- All other files will be copied as-is.
+- All other files will be copied untouched.
 
 ''');
     exit(0);
@@ -116,8 +116,8 @@ License: Personal Use Only (non-commercial)
     } catch (e) {
       print('⚠️ Error processing $fileName: $e');
     }
-
     processed++;
+    _drawProgressBar(processed, files.length);
   }
 
   final convertedFiles = <File>[];
@@ -152,4 +152,17 @@ Future<void> _writeResized(String path, img.Image resized, String ext) async {
     encoded = img.encodeJpg(resized, quality: 60);
   }
   await File(path).writeAsBytes(encoded, flush: true);
+}
+
+void _drawProgressBar(int current, int total) {
+  const barLength = 40;
+  final percent = current / total;
+  final filledLength = (barLength * percent).round();
+  final bar = '=' * filledLength + ' ' * (barLength - filledLength);
+  final percentDisplay = (percent * 100).toStringAsFixed(1).padLeft(5);
+
+  stdout.write('\r📊 Progress: |$bar| $percentDisplay% ($current of $total)');
+  if (current == total) {
+    stdout.writeln(); // Newline at the end
+  }
 }
