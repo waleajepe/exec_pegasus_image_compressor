@@ -18,13 +18,14 @@ Example:
   pegasus_image_compressor ~/Pictures ~/CompressedImages --min-size=300
 
 Options:
-  -h, --help              Show this help message
-  -c, --copyright         Show copyright
-  --min-size=<KB>         Minimum file size to start compression (default: 500KB)
+  -h, --help                Show this help message
+  -c, --copyright           Show copyright
+  --min-size=<KB>           Minimum file size to start compression (default: 300KB)
+  --max-size=<KB>           Maximum file size after compression (default: 600KB)
 
 📝 Note:
 - Only .jpg, .jpeg, and .png files are processed.
-- Files are compressed based on size thresholds.
+- Files are compressed iteratively to ensure they stay under max-size.
 - All other files are copied untouched.
 ''');
     exit(0);
@@ -34,7 +35,7 @@ Options:
   if (args.contains('--copyright') || args.contains('-c')) {
     print('''
 Pegasus Image Compressor CLI
-Version: 1.1.0
+Version: 2.0.0
 Author: Olawale Ajepe
 Copyright © 2025
 License: Personal Use Only (non-commercial)
@@ -42,8 +43,9 @@ License: Personal Use Only (non-commercial)
     exit(0);
   }
 
-  // 🎯 Extract flag: --min-size
-  double minSizeKB = 500; // default
+  // 🎯 Extract flags
+  double minSizeKB = 300;
+  double maxSizeKB = 600;
 
   final minSizeArg = args.firstWhere(
     (arg) => arg.startsWith('--min-size='),
@@ -57,7 +59,23 @@ License: Personal Use Only (non-commercial)
     if (parsed != null && parsed > 0) {
       minSizeKB = parsed;
     } else {
-      print('❗ Invalid value for --min-size. Using default (500KB).');
+      print('❗ Invalid value for --min-size. Using default (300KB).');
+    }
+  }
+
+  final maxSizeArg = args.firstWhere(
+    (arg) => arg.startsWith('--max-size='),
+    orElse: () => '',
+  );
+
+  if (maxSizeArg.isNotEmpty) {
+    final value = maxSizeArg.split('=').last;
+    final parsed = double.tryParse(value);
+
+    if (parsed != null && parsed > 0) {
+      maxSizeKB = parsed;
+    } else {
+      print('❗ Invalid value for --max-size. Using default (600KB).');
     }
   }
 
@@ -65,7 +83,9 @@ License: Personal Use Only (non-commercial)
 
   // 🧠 Extract positional args (ignore flags)
   final positionalArgs =
-      args.where((arg) => !arg.startsWith('--') && !arg.startsWith('-')).toList();
+      args
+          .where((arg) => !arg.startsWith('--') && !arg.startsWith('-'))
+          .toList();
 
   if (positionalArgs.length < 2) {
     print('❗ Error: Missing arguments.\nRun with --help to see usage.');
@@ -112,41 +132,14 @@ License: Personal Use Only (non-commercial)
         final bytes = await file.readAsBytes();
         final image = img.decodeImage(bytes);
 
-        if (image != null && sizeInMB > 3) {
-          // 🔴 Large
-          final resized = img.copyResize(
-            image,
-            width: (image.width * 0.6).toInt(),
-            height: (image.height * 0.6).toInt(),
-          );
-
-          await _writeResized(targetPath, resized, ext, quality: 60);
-          print('✅ Resized (large): $fileName');
-
-        } else if (image != null && sizeInMB >= 1) {
-          // 🟠 Medium
-          final resized = img.copyResize(
-            image,
-            width: (image.width * 0.7).toInt(),
-            height: (image.height * 0.7).toInt(),
-          );
-
-          await _writeResized(targetPath, resized, ext, quality: 65);
-          print('✅ Resized (medium): $fileName');
-
-        } else if (image != null && sizeInMB >= compressThresholdMB) {
-          // 🟡 Small but above threshold
-          await _writeResized(targetPath, image, ext, quality: 75);
-          print(
-              '🟡 Compressed (≥${minSizeKB.toInt()}KB): $fileName');
-
+        if (image != null && sizeInMB >= compressThresholdMB) {
+          await _compressToMaxSize(targetPath, image, ext, maxSizeKB);
+          print('✅ Compressed: $fileName');
         } else {
-          // 🟢 Very small
           await file.copy(targetPath);
           print('📂 Copied (<${minSizeKB.toInt()}KB): $fileName');
         }
       } else {
-        // 📁 Non-image
         await file.copy(targetPath);
         print('📁 Copied (non-image): $fileName');
       }
@@ -185,22 +178,66 @@ Future<int> _getTotalSize(List<File> files) async {
   return totalSize;
 }
 
-// 💾 Write image with quality control
-Future<void> _writeResized(
+// 🔁 Iteratively compress until under maxSizeKB
+Future<void> _compressToMaxSize(
   String path,
-  img.Image image,
-  String ext, {
-  int quality = 60,
-}) async {
-  List<int> encoded;
+  img.Image original,
+  String ext,
+  double maxSizeKB,
+) async {
+  const maxDimensionLimit = 0.05;
+  int quality = 85;
+  double scale = 1.0;
+  int width = original.width;
+  int height = original.height;
 
-  if (ext == '.png') {
-    encoded = img.encodePng(image);
-  } else {
-    encoded = img.encodeJpg(image, quality: quality);
+  while (true) {
+    final currentWidth = (width * scale).round().clamp(1, original.width);
+    final currentHeight = (height * scale).round().clamp(1, original.height);
+    final resized = img.copyResize(
+      original,
+      width: currentWidth,
+      height: currentHeight,
+    );
+
+    List<int> encoded;
+    if (ext == '.png') {
+      encoded = img.encodePng(resized);
+    } else {
+      encoded = img.encodeJpg(resized, quality: quality);
+    }
+
+    if (encoded.length <= (maxSizeKB * 1024).toInt()) {
+      await File(path).writeAsBytes(encoded, flush: true);
+      return;
+    }
+
+    if (quality > 20) {
+      quality -= 10;
+    } else if (scale > maxDimensionLimit) {
+      scale *= 0.85;
+      quality = 85;
+    } else {
+      // best effort — write at lowest quality and minimal scale
+      final minimal = img.copyResize(
+        original,
+        width: (original.width * maxDimensionLimit).round().clamp(
+          1,
+          original.width,
+        ),
+        height: (original.height * maxDimensionLimit).round().clamp(
+          1,
+          original.height,
+        ),
+      );
+      final minimalEncoded =
+          ext == '.png'
+              ? img.encodePng(minimal)
+              : img.encodeJpg(minimal, quality: 10);
+      await File(path).writeAsBytes(minimalEncoded, flush: true);
+      return;
+    }
   }
-
-  await File(path).writeAsBytes(encoded, flush: true);
 }
 
 // 📊 CLI Progress bar
